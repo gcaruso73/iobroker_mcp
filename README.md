@@ -119,9 +119,10 @@ Add to Cursor MCP settings:
   - **Solution:** Use valid file paths or better error handling
 
 #### **System Operations**
-- **`readLogs`** ❌ - "no file loggers" (Status: 500)
+- **`readLogs`** ⚠️ - "no file loggers" (Status: 500) - **IMPROVED**
   - **Problem:** ioBroker not configured for file logging
-  - **Solution:** Configure ioBroker or disable tool
+  - **Solution:** Now provides helpful error message with configuration instructions
+  - **Status:** Enhanced error handling with user guidance
 
 #### **Adapter Control**
 - **`sendTo` (for other commands)** ❌ - Timeout (30s) for certain commands

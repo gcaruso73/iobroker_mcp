@@ -195,6 +195,12 @@ const ReadLogsSchema = z.object({
   host: z.string().optional().describe('Host name (optional, defaults to current host)'),
 });
 
+const ReadCurrentLogSchema = z.object({
+  host: z.string().optional().describe('Host name (optional, defaults to configured ioBroker host)'),
+  previewLength: z.number().optional().default(100000).describe('Number of characters to show in the log preview (default: 100000).'),
+  showLast: z.boolean().optional().default(false).describe('If true, show the last N characters instead of the first N characters (default: false).'),
+});
+
 const LogMessageSchema = z.object({
   text: z.string().describe('Log message text'),
   level: z.enum(['info', 'warn', 'error', 'debug']).optional().default('info').describe('Log level'),
@@ -394,17 +400,40 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'readLogs',
-      description: 'Read log file information from ioBroker',
+      description: 'Read file names and sizes of log files from ioBroker. Automatically uses the configured ioBroker host and resolves IP to hostname. Returns log file information with HTTP download links. Requires ioBroker to be configured for file logging.',
       inputSchema: {
         type: 'object',
         properties: {
           host: {
             type: 'string',
-            description: 'Host name (optional, defaults to current host)'
+            description: 'Host name or IP address (optional, defaults to configured ioBroker host). If IP is provided, it will be automatically resolved to hostname.'
           }
         }
       },
     },
+        {
+          name: 'readCurrentLog',
+          description: 'Automatically find and download the current day log file from ioBroker. Finds the unzipped .log file for today and downloads its content. Requires ioBroker to be configured for file logging. Note: Log files are chronological - oldest entries are at the beginning, newest entries are at the end.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              host: {
+                type: 'string',
+                description: 'Host name or IP address (optional, defaults to configured ioBroker host). If IP is provided, it will be automatically resolved to hostname.'
+              },
+              previewLength: {
+                type: 'number',
+                description: 'Number of characters to show in the log preview (default: 100000).',
+                default: 100000
+              },
+              showLast: {
+                type: 'boolean',
+                description: 'If true, show the last N characters (newest log entries) instead of the first N characters (oldest log entries). Default: false.',
+                default: false
+              }
+            }
+          },
+        },
     {
       name: 'logMessage',
       description: 'Add a log entry to ioBroker',
@@ -796,16 +825,248 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'readLogs': {
         const { host } = ReadLogsSchema.parse(args);
         
-        const response = await callRestAPICommand('readLogs', {
-          host: host || 'localhost'
-        });
+        try {
+          // Use configured ioBroker host if no host specified, or resolve IP to hostname
+          let targetHost = host || IOBROKER_HOST;
+          
+          // If host looks like an IP address (including the configured one), try to get hostname via getHostByIp
+          if (targetHost && /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(targetHost)) {
+            try {
+              const hostResponse = await callRestAPICommand('getHostByIp', { ip: targetHost });
+              if (hostResponse && hostResponse.result && hostResponse.result.common && hostResponse.result.common.hostname) {
+                targetHost = hostResponse.result.common.hostname;
+              }
+            } catch (hostError) {
+              // If getHostByIp fails, continue with the original IP
+              console.log(`Could not resolve hostname for IP ${targetHost}, using IP directly`);
+            }
+          }
+          
+          const response = await callRestAPICommand('readLogs', {
+            host: targetHost
+          });
+          
+          let resultText = `Log files for host ${targetHost}${host && host !== targetHost ? ` (resolved from IP ${host})` : host ? '' : ` (using configured ioBroker host ${IOBROKER_HOST})`}:\n${JSON.stringify(response, null, 2)}`;
+          
+          // Add information about HTTP access if log files are found
+          if (response && response.result && Array.isArray(response.result) && response.result.length > 0) {
+            resultText += `\n\n📁 Log files can be downloaded via HTTP:\nhttp://${IOBROKER_HOST}:8093/<filename>\n\nExample files found:\n`;
+            response.result.slice(0, 3).forEach((file: any) => {
+              resultText += `- http://${IOBROKER_HOST}:8093/${file.fileName}\n`;
+            });
+            if (response.result.length > 3) {
+              resultText += `- ... and ${response.result.length - 3} more files\n`;
+            }
+          }
+          
+          return {
+            content: [{
+              type: 'text',
+              text: resultText,
+            }],
+          };
+        } catch (error: any) {
+          // Handle specific ioBroker error cases
+          if (error.message && error.message.includes('no file loggers')) {
+            return {
+              content: [{
+                type: 'text',
+                text: `⚠️ No file loggers configured in ioBroker.\n\nAccording to the REST API documentation, readLogs(host) should return file names and sizes of log files.\n\nTo enable file logging in ioBroker:\n1. Open ioBroker Admin interface\n2. Go to "Logs" tab\n3. Enable "File logging" option\n4. Configure log file path and settings\n5. Restart ioBroker if needed\n\nOnce configured, you can read log files via:\n- This MCP tool (readLogs)\n- Direct HTTP access: http://ipaddress:8093/\n\nAlternative: Use the 'logMessage' tool to add log entries programmatically.`,
+              }],
+            };
+          }
+          
+          // Handle other errors
+          return {
+            content: [{
+              type: 'text',
+              text: `Error reading logs for host ${host || 'localhost'}: ${error.message || error}`,
+            }],
+          };
+        }
+      }
+
+      case 'readCurrentLog': {
+        const { host, previewLength, showLast } = ReadCurrentLogSchema.parse(args);
         
-        return {
-          content: [{
-            type: 'text',
-            text: `Log files for host ${host || 'localhost'}:\n${JSON.stringify(response, null, 2)}`,
-          }],
-        };
+        try {
+          // Use configured ioBroker host if no host specified, or resolve IP to hostname
+          let targetHost = host || IOBROKER_HOST;
+          
+          // If host looks like an IP address (including the configured one), try to get hostname via getHostByIp
+          if (targetHost && /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(targetHost)) {
+            try {
+              const hostResponse = await callRestAPICommand('getHostByIp', { ip: targetHost });
+              if (hostResponse && hostResponse.result && hostResponse.result.common && hostResponse.result.common.hostname) {
+                targetHost = hostResponse.result.common.hostname;
+              }
+            } catch (hostError) {
+              // If getHostByIp fails, continue with the original IP
+              console.log(`Could not resolve hostname for IP ${targetHost}, using IP directly`);
+            }
+          }
+          
+          // First, get the list of log files
+          const logsResponse = await callRestAPICommand('readLogs', {
+            host: targetHost
+          });
+          
+          if (!logsResponse || !logsResponse.result || !Array.isArray(logsResponse.result)) {
+            return {
+              content: [{
+                type: 'text',
+                text: `No log files found for host ${targetHost}`,
+              }],
+            };
+          }
+          
+          // Get current date in YYYY-MM-DD format
+          const today = new Date().toISOString().split('T')[0];
+          
+          // Find the current day's log file (.log, not .log.gz), or fallback to current.log
+          let currentLogFile = logsResponse.result.find((file: any) => {
+            return file.fileName && 
+                   file.fileName.includes(today) && 
+                   file.fileName.endsWith('.log') && 
+                   !file.fileName.endsWith('.log.gz');
+          });
+          
+          // If no current day log found, try to find current.log
+          if (!currentLogFile) {
+            currentLogFile = logsResponse.result.find((file: any) => {
+              return file.fileName && file.fileName.endsWith('iobroker.current.log');
+            });
+          }
+          
+          // If still no current log found, try to find any unzipped .log file for today or yesterday
+          if (!currentLogFile) {
+            const yesterday = new Date();
+            yesterday.setDate(yesterday.getDate() - 1);
+            const yesterdayStr = yesterday.toISOString().split('T')[0];
+            
+            currentLogFile = logsResponse.result.find((file: any) => {
+              return file.fileName && 
+                     (file.fileName.includes(today) || file.fileName.includes(yesterdayStr)) &&
+                     file.fileName.endsWith('.log') && 
+                     !file.fileName.endsWith('.log.gz');
+            });
+          }
+          
+          if (!currentLogFile) {
+            return {
+              content: [{
+                type: 'text',
+                text: `No current day log file found for ${today} on host ${targetHost}${host && host !== targetHost ? ` (resolved from IP ${host})` : host ? '' : ` (using configured ioBroker host ${IOBROKER_HOST})`}.\n\nAvailable log files:\n${logsResponse.result.map((file: any) => `- ${file.fileName} (${file.size} bytes)`).join('\n')}`,
+              }],
+            };
+          }
+          
+          // Try to download the current log file content
+          const logUrl = `http://${IOBROKER_HOST}:8093/${currentLogFile.fileName}`;
+          const logSize = currentLogFile.size;
+          
+          try {
+            // Simple download without complex headers
+            const logResponse = await axios.get(logUrl, {
+              timeout: 60000, // 60 second timeout
+              responseType: 'text',
+            });
+            
+            let logContent = logResponse.data;
+            
+            // Extract pure log content from HTML response
+            if (typeof logContent === 'string' && logContent.includes('<body>')) {
+              // Find the content between <body> and </body> tags
+              const bodyStart = logContent.indexOf('<body>');
+              const bodyEnd = logContent.indexOf('</body>');
+              
+              if (bodyStart !== -1 && bodyEnd !== -1) {
+                // Extract content between body tags and remove HTML tags
+                let bodyContent = logContent.substring(bodyStart + 6, bodyEnd);
+                
+                // Remove HTML tags and decode HTML entities
+                bodyContent = bodyContent
+                  .replace(/<[^>]*>/g, '') // Remove HTML tags
+                  .replace(/&lt;/g, '<')
+                  .replace(/&gt;/g, '>')
+                  .replace(/&amp;/g, '&')
+                  .replace(/&quot;/g, '"')
+                  .replace(/&#39;/g, "'");
+                
+                logContent = bodyContent;
+              }
+            }
+            
+            // Show first or last N characters of the log (configurable)
+            const logPreviewLength = previewLength || 100000;
+            let preview: string;
+            let truncationMessage: string;
+            
+            if (showLast) {
+              // Show last N characters
+              preview = logContent.length > logPreviewLength 
+                ? logContent.substring(logContent.length - logPreviewLength) + `\n\n... [LOG TRUNCATED - showing last ${logPreviewLength} characters] ...`
+                : logContent;
+            } else {
+              // Show first N characters (default behavior)
+              preview = logContent.length > logPreviewLength 
+                ? logContent.substring(0, logPreviewLength) + `\n\n... [LOG TRUNCATED - showing first ${logPreviewLength} characters] ...`
+                : logContent;
+            }
+            
+            let resultText = `📄 Current day log file (${today}) for host ${targetHost}${host && host !== targetHost ? ` (resolved from IP ${host})` : host ? '' : ` (using configured ioBroker host ${IOBROKER_HOST})`}:\n`;
+            resultText += `📁 File: ${currentLogFile.fileName}\n`;
+            resultText += `📊 Size: ${logSize} bytes (${(logSize / 1024 / 1024).toFixed(2)} MB)\n`;
+            resultText += `🔗 Full URL: ${logUrl}\n\n`;
+            resultText += `📝 Log Preview:\n${'='.repeat(50)}\n${preview}`;
+            
+            if (logContent.length > previewLength) {
+              resultText += `\n\n💡 Full log available at: ${logUrl}`;
+            }
+            
+            return {
+              content: [{
+                type: 'text',
+                text: resultText,
+              }],
+            };
+            
+          } catch (downloadError: any) {
+            // If download fails, show file info and URL
+            let resultText = `📄 Current day log file (${today}) for host ${targetHost}${host && host !== targetHost ? ` (resolved from IP ${host})` : host ? '' : ` (using configured ioBroker host ${IOBROKER_HOST})`}:\n`;
+            resultText += `📁 File: ${currentLogFile.fileName}\n`;
+            resultText += `📊 Size: ${logSize} bytes (${(logSize / 1024 / 1024).toFixed(2)} MB)\n`;
+            resultText += `🔗 Download URL: ${logUrl}\n\n`;
+            resultText += `❌ Could not download log content: ${downloadError.message}\n`;
+            resultText += `💡 You can view the log in your browser using the URL above.`;
+            
+            return {
+              content: [{
+                type: 'text',
+                text: resultText,
+              }],
+            };
+          }
+          
+        } catch (error: any) {
+          // Handle specific ioBroker error cases
+          if (error.message && error.message.includes('no file loggers')) {
+            return {
+              content: [{
+                type: 'text',
+                text: `⚠️ No file loggers configured in ioBroker.\n\nAccording to the REST API documentation, readLogs(host) should return file names and sizes of log files.\n\nTo enable file logging in ioBroker:\n1. Open ioBroker Admin interface\n2. Go to "Logs" tab\n3. Enable "File logging" option\n4. Configure log file path and settings\n5. Restart ioBroker if needed\n\nOnce configured, you can read log files via:\n- This MCP tool (readCurrentLog)\n- Direct HTTP access: http://ipaddress:8093/\n\nAlternative: Use the 'logMessage' tool to add log entries programmatically.`,
+              }],
+            };
+          }
+          
+          // Handle other errors
+          return {
+            content: [{
+              type: 'text',
+              text: `Error reading current log for host ${host || 'localhost'}: ${error.message || error}`,
+            }],
+          };
+        }
       }
 
       case 'logMessage': {
@@ -878,8 +1139,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         
         try {
           // Make the API call using the configured axios instance
-          const response = await api.get(`/v1/getHistory/${encodeURIComponent(id)}?start=${start}&end=${end}`);
+          // Use aggregate=none to get raw boolean values instead of null
+          const response = await api.get(`/v1/getHistory/${encodeURIComponent(id)}?start=${start}&end=${end}&aggregate=none`);
           const historyData = response.data || [];
+          
+          // Debug information removed - problem solved with aggregate=none
           
           // Simple format result mit lokaler Zeitanzeige
           const formattedResult = {
@@ -888,13 +1152,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             period: `${formatLocalTime(start)} to ${formatLocalTime(end)}`,
             data: historyData.map((entry: any) => [
               formatLocalTime(entry.ts), // Lokale Zeit für Anzeige
-              entry.val
+              entry.val // Now we get the correct boolean values with aggregate=none
             ]),
             summary: {
               count: historyData.length,
-              min: historyData.length > 0 ? Math.min(...historyData.map((d: any) => d.val)) : 0,
-              max: historyData.length > 0 ? Math.max(...historyData.map((d: any) => d.val)) : 0,
-              avg: historyData.length > 0 ? Math.round(historyData.reduce((sum: number, d: any) => sum + d.val, 0) / historyData.length * 100) / 100 : 0
+              min: historyData.length > 0 ? Math.min(...historyData.map((d: any) => d.val).filter((v: any) => typeof v === 'number')) : 0,
+              max: historyData.length > 0 ? Math.max(...historyData.map((d: any) => d.val).filter((v: any) => typeof v === 'number')) : 0,
+              avg: historyData.length > 0 ? Math.round(historyData.map((d: any) => d.val).filter((v: any) => typeof v === 'number').reduce((sum: number, v: number) => sum + v, 0) / historyData.filter((d: any) => typeof d.val === 'number').length * 100) / 100 : 0
             }
           };
           

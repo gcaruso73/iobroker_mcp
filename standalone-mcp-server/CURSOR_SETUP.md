@@ -116,6 +116,7 @@ Stop the script javascript.0.Lüfter_Bad_Anbau
 Show me the log files for localhost
 Add a log entry: "Test message" with level "info"
 ```
+**Note:** `readLogs` requires ioBroker to be configured for file logging. If you get "no file loggers" error, enable file logging in ioBroker Admin → Logs tab.
 
 ### File Operations (NEW):
 ```
