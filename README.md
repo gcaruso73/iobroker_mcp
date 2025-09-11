@@ -81,7 +81,7 @@ Add to Cursor MCP settings:
 
 ## MCP Tools Status
 
-### ✅ **Working Tools (9/13)**
+### ✅ **Working Tools (11/13)**
 
 #### **Core State Operations**
 - **`getState`** ✅ - Read a single state value
@@ -97,7 +97,8 @@ Add to Cursor MCP settings:
   - Supports relative time formats: "5m", "2h", "3d", "1w"
   - Supports ISO date strings: "2025-08-16T10:00:00"
   - Automatic local timezone detection and conversion
-  - Flexible aggregation options (min, max, avg, sum, count, onchange)
+  - Flexible aggregation options (min, max, avg, sum, count, onchange, none)
+  - **Fixed boolean value handling** - Now correctly displays true/false instead of null
 
 #### **Adapter Control**
 - **`sendTo`** ✅ - Send commands to adapters
@@ -111,23 +112,24 @@ Add to Cursor MCP settings:
 #### **System Operations**
 - **`logMessage`** ✅ - Add log entries to ioBroker
 
-### ❌ **Non-working Tools (4/13)**
+### ❌ **Non-working Tools (2/13)**
 
 #### **File Operations**
 - **`readFile`** ❌ - "Not exists" (Status: 500)
   - **Problem:** File doesn't exist or path is incorrect
   - **Solution:** Use valid file paths or better error handling
 
-#### **System Operations**
-- **`readLogs`** ⚠️ - "no file loggers" (Status: 500) - **IMPROVED**
-  - **Problem:** ioBroker not configured for file logging
-  - **Solution:** Now provides helpful error message with configuration instructions
-  - **Status:** Enhanced error handling with user guidance
-
-#### **Adapter Control**
-- **`sendTo` (for other commands)** ❌ - Timeout (30s) for certain commands
-  - **Problem:** Certain commands (like `getScripts`) timeout
-  - **Solution:** Increase timeout or command-specific handling
+#### **Log Management**
+- **`readLogs`** ✅ - Read log file names and sizes with HTTP download links
+  - **Enhanced:** Improved error handling with configuration instructions
+  - **Feature:** Automatic IP-to-hostname resolution
+  - **Feature:** Returns HTTP download links for log files
+- **`readCurrentLog`** ✅ - Automatically find and download current day log file
+  - **Feature:** Automatic current log file detection
+  - **Feature:** HTML content filtering (removes HTML wrapper)
+  - **Feature:** Configurable preview length (default: 100,000 characters)
+  - **Feature:** Option to show first or last N characters
+  - **Feature:** Automatic IP-to-hostname resolution
 
 #### **Script Management**
 - **`startScript`** ❌ - "javascript.0 adapter is not running"
@@ -159,6 +161,16 @@ Add to Cursor MCP settings:
 getHistory for tuya.0.bf7200ddef31e20s5bgr46.106, last 35 minutes
 ```
 
+### Query boolean switch history:
+```
+getHistory for shelly.0.SHPLG-S#9A3649#1.Relay0.Switch, last 20h with aggregate=none
+```
+
+### Read current day log:
+```
+readCurrentLog with previewLength=50000 and showLast=true
+```
+
 ### Restart an adapter:
 ```
 sendTo shelly.0 with command restart
@@ -180,35 +192,8 @@ Compared to the full adapter approach, this standalone server:
 ## Known Issues & Solutions
 
 ### **Adapter Restarts Take 1-2 Minutes**
-- **Cause:** Complex adapters with many connected devices
-- **Solution:** Normal behavior for network adapters (Shelly, etc.)
 
-### **"no file loggers" Error**
-- **Cause:** ioBroker not configured for file logging
-- **Solution:** Configure ioBroker or disable tool
 
-### **"Not exists" with readFile**
-- **Cause:** File doesn't exist or adapter not accessible
-- **Solution:** Use valid adapter instances (e.g., `admin.0`)
-
-### **Timeout errors**
-- **Cause:** Complex operations may take longer than 30 seconds
-- **Solution:** Increase timeout or optimize operations
-
-## Performance Notes
-
-- Adapter restarts may take 1-2 minutes for complex adapters
-- History queries are optimized for reasonable time ranges
-- File operations work best with valid adapter instances
-
-## When to Use
-
-This standalone approach is ideal when:
-- You need comprehensive ioBroker access from AI assistants
-- You don't want to modify your ioBroker installation
-- You need historical data analysis capabilities
-- You want to control adapters and scripts remotely
-- You're building AI-powered home automation workflows
 
 ## Additional Documentation
 
