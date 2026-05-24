@@ -55,29 +55,25 @@ async function getStateDirect(id: string) {
 
 // Helper function for direct state setting.
 //
-// IMPORTANT: do NOT use the legacy `GET /v1/state/{id}?value=...` shortcut here.
-// That endpoint exists only for back-compat with simple-api and treats `value`
-// as a single primitive query-string parameter — there is no way to pass a
-// separate `ack` flag, and a previous implementation worked around that by
-// sending `value=JSON.stringify({val, ack})`. The rest-api adapter then
-// stored that JSON-encoded string VERBATIM as the state value, silently
-// corrupting any typed datapoint (boolean/number/object lost their type and
-// became a string like `'{"val":"true","ack":true}'`, while ack stayed false).
+// Use POST /v1/command/setState with a JSON body so the value's native
+// type (boolean/number/object) and the ack flag are preserved.
 //
-// The correct way is the command interface: POST /v1/command/setState with a
-// JSON body that preserves the value's native type and carries the ack flag
-// as a real boolean.
+// Body is pre-serialized with JSON.stringify and axios's default
+// transformRequest is bypassed: in practice axios's default transform
+// has been observed turning primitive payloads into stringified forms
+// when the rest-api adapter reads them (e.g. boolean true arriving as
+// the string "true"). Hand-stringifying avoids any such middleware.
+//
+// The previous implementation used the legacy
+//   GET /v1/state/{id}?value=JSON.stringify({val, ack})
+// shortcut, which the rest-api adapter stored verbatim as the state
+// value, corrupting every datapoint write.
 async function setStateDirect(id: string, value: any, ack: boolean = false) {
-  const response = await api.post(
-    `/v1/command/setState`,
-    {
-      id,
-      state: { val: value, ack },
-    },
-    {
-      headers: { 'Content-Type': 'application/json' },
-    }
-  );
+  const body = JSON.stringify({ id, state: { val: value, ack } });
+  const response = await api.post(`/v1/command/setState`, body, {
+    headers: { 'Content-Type': 'application/json' },
+    transformRequest: [(d: any) => d],
+  });
   return response.data;
 }
 
@@ -629,8 +625,31 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'setState': {
-        const { id, value, ack } = SetStateSchema.parse(args);
-        
+        const parsed = SetStateSchema.parse(args);
+        const { id, ack } = parsed;
+        let value: any = parsed.value;
+        // Workaround for MCP clients that JSON-serialize tool arguments
+        // as strings (e.g. Anthropic Cowork): boolean/number values
+        // arrive here as strings ("true", "1") even though the schema
+        // declares value as `any`. Look up the target datapoint's
+        // declared common.type and coerce the incoming value to its
+        // native primitive, so the rest-api adapter stores the correct
+        // type instead of a string. Best-effort — if the lookup fails
+        // we fall through with the original value.
+        if (typeof value === 'string') {
+          try {
+            const obj: any = await callRestAPICommand('getObject', { id });
+            // rest-api wraps responses as {error, result}; common can be in either place
+            const t = obj?.result?.common?.type ?? obj?.common?.type;
+            if (t === 'boolean') {
+              if (value === 'true') value = true;
+              else if (value === 'false') value = false;
+            } else if (t === 'number') {
+              const n = Number(value);
+              if (!Number.isNaN(n)) value = n;
+            }
+          } catch (_e) { /* fall through with original value */ }
+        }
         try {
           // Try direct state setting first
           const response = await setStateDirect(id, value, ack || false);
