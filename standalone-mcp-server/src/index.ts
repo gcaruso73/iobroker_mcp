@@ -53,13 +53,31 @@ async function getStateDirect(id: string) {
   return response.data;
 }
 
-// Helper function for direct state setting
+// Helper function for direct state setting.
+//
+// IMPORTANT: do NOT use the legacy `GET /v1/state/{id}?value=...` shortcut here.
+// That endpoint exists only for back-compat with simple-api and treats `value`
+// as a single primitive query-string parameter — there is no way to pass a
+// separate `ack` flag, and a previous implementation worked around that by
+// sending `value=JSON.stringify({val, ack})`. The rest-api adapter then
+// stored that JSON-encoded string VERBATIM as the state value, silently
+// corrupting any typed datapoint (boolean/number/object lost their type and
+// became a string like `'{"val":"true","ack":true}'`, while ack stayed false).
+//
+// The correct way is the command interface: POST /v1/command/setState with a
+// JSON body that preserves the value's native type and carries the ack flag
+// as a real boolean.
 async function setStateDirect(id: string, value: any, ack: boolean = false) {
-  const response = await api.get(`/v1/state/${encodeURIComponent(id)}`, {
-    params: {
-      value: JSON.stringify({ val: value, ack: ack })
+  const response = await api.post(
+    `/v1/command/setState`,
+    {
+      id,
+      state: { val: value, ack },
+    },
+    {
+      headers: { 'Content-Type': 'application/json' },
     }
-  });
+  );
   return response.data;
 }
 
